@@ -27,3 +27,13 @@ With authorization for a disposable failing run and Slack post, verify that one 
 4. Revoke the old webhook only after every consumer has been verified on the replacement.
 
 See the [HyperFleet notification runbook](https://github.com/openshift-hyperfleet/architecture/blob/main/hyperfleet/docs/release/operations/notifications.md) for the separate release notification path and escalation context.
+
+## Verify pinned task bundles
+
+Every `quay.io/konflux-ci/tekton-catalog/*` reference in these PipelineRuns is pinned by digest. If a pinned digest is not a Tekton bundle (for example, a SARIF scan report that briefly held the tag upstream), every push and tag pipeline fails at bundle resolution, and the bump diff looks like a healthy one.
+
+`make verify-tekton-bundles` fetches the manifest of each pinned digest and applies the same compliance check as the Tekton bundles resolver. It uses only the digest, needs no credentials, and downloads no layers. Install the checker with `go install github.com/openshift-hyperfleet/hyperfleet-hooks/cmd/hyperfleet-hooks@v0.3.0`, or point `HYPERFLEET_HOOKS=/path/to/binary` at an existing build.
+
+The required Prow job `ci/prow/verify-tekton-bundles` runs this check on pull requests that change `.tekton/` or the `Makefile`, including MintMaker "Update Konflux references" PRs.
+
+If it fails, re-pin the reported task to a digest that passes, for example the one its tag points at after upstream fixes it. Check a candidate with `skopeo inspect --raw docker://<ref-with-digest-only>`, where the reference carries the digest and no tag.
