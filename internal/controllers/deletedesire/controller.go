@@ -121,11 +121,13 @@ func (r *DeleteReconciler) RunOnce(ctx context.Context) error {
 // issued but the resource still exists (finalizers, graceful termination).
 func (r *DeleteReconciler) reconcileOne(ctx context.Context, d desire.DeleteDesire) error {
 	var newStatus desire.Status
+	baseStatus := d.Status
+	version := d.Version
 
 	// Step 1: Pre-flight checks - resolve GVR, validate namespace
 	client, err := r.setupResourceClient(d.Identity)
 	if err != nil {
-		newStatus = preCheckFailed(d.Status, err.Error())
+		newStatus = preCheckFailed(d.Status, d.Generation, err.Error())
 	} else {
 		// Re-check the desire hasn't already succeeded before deleting, to
 		// shrink the race window against a concurrent update completing the
@@ -137,27 +139,27 @@ func (r *DeleteReconciler) reconcileOne(ctx context.Context, d desire.DeleteDesi
 			)
 		}
 		if desire.IsDeleted(dd.Status) {
-			// Already completed successfully on a prior pass, nothing more to do.
-			slog.DebugContext(ctx, "delete: desire already completed, skipping",
-				"identity", d.Identity,
-			)
-			return nil
-		}
-
-		// Step 2: Execute the actual delete operation (GET → DELETE → GET)
-		newStatus, err = r.executeDelete(ctx, client, d)
-		if err != nil {
-			// Context cancellation - abort without writing status.
-			return err
+			// Already completed: restamp ObservedGeneration so a legacy record
+			// does not stay stale forever
+			newStatus = deleted(dd.Status, dd.Generation)
+			baseStatus = dd.Status
+			version = dd.Version
+		} else {
+			// Step 2: Execute the actual delete operation (GET → DELETE → GET)
+			newStatus, err = r.executeDelete(ctx, client, d)
+			if err != nil {
+				// Context cancellation - abort without writing status.
+				return err
+			}
 		}
 	}
 	// Step 3: Check to see if newStatus and old status are equal
-	if util.Equal(newStatus, d.Status) {
+	if util.Equal(newStatus, baseStatus) {
 		return nil
 	}
 
 	// Step 4: Update DeleteDesire status with newStatus - will abort if context is canceled
-	if _, err := r.status.UpdateDeleteDesireStatus(ctx, d.Identity, newStatus, d.Version); err != nil {
+	if _, err := r.status.UpdateDeleteDesireStatus(ctx, d.Identity, newStatus, version); err != nil {
 		if errors.Is(err, desire.ErrVersionConflict) {
 			slog.DebugContext(ctx, "delete: status write lost a version race, will retry next pass",
 				"identity", d.Identity,
@@ -252,11 +254,11 @@ func (r *DeleteReconciler) executeDelete(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return desire.Status{}, fmt.Errorf("delete %s: %w", util.DescribeIdentity(d.Identity), ctxErr)
 		}
-		return deleteFailed(d.Status, fmt.Errorf("failed to check existence: %w", err)), nil
+		return deleteFailed(d.Status, d.Generation, fmt.Errorf("failed to check existence: %w", err)), nil
 	}
 	if !exists {
 		// Resource is already gone - success.
-		return deleted(d.Status), nil
+		return deleted(d.Status, d.Generation), nil
 	}
 	deletionTimestamp := obj.GetDeletionTimestamp()
 	// Resource exists - check if deletion is already in progress.
@@ -265,7 +267,7 @@ func (r *DeleteReconciler) executeDelete(
 		// Object still exists, waiting for finalizers to complete.
 		uid := obj.GetUID()
 		msg := fmt.Sprintf("deletion timestamp: %s, uid: %s", deletionTimestamp.Format(time.RFC3339), uid)
-		return waitingForDeletion(d.Status, msg), nil
+		return waitingForDeletion(d.Status, d.Generation, msg), nil
 	}
 
 	// No deletion timestamp yet - issue the delete call.
@@ -289,7 +291,7 @@ func (r *DeleteReconciler) executeDelete(
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			// Already deleted between GET and DELETE - success.
-			return deleted(d.Status), nil
+			return deleted(d.Status, d.Generation), nil
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return desire.Status{}, fmt.Errorf("delete %s: %w", util.DescribeIdentity(d.Identity), ctxErr)
@@ -300,7 +302,7 @@ func (r *DeleteReconciler) executeDelete(
 		if gateErr := reconciler.CanWrite(ctx); gateErr != nil {
 			return desire.Status{}, fmt.Errorf("delete %s: %w", util.DescribeIdentity(d.Identity), gateErr)
 		}
-		return deleteFailed(d.Status, err), nil
+		return deleteFailed(d.Status, d.Generation, err), nil
 	}
 
 	// Delete was accepted. Check if the object is actually gone now.
@@ -309,11 +311,11 @@ func (r *DeleteReconciler) executeDelete(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return desire.Status{}, fmt.Errorf("delete %s: %w", util.DescribeIdentity(d.Identity), ctxErr)
 		}
-		return deleteFailed(d.Status, fmt.Errorf("failed to confirm deletion: %w", err)), nil
+		return deleteFailed(d.Status, d.Generation, fmt.Errorf("failed to confirm deletion: %w", err)), nil
 	}
 	if !exists {
 		// Confirmed gone - success.
-		return deleted(d.Status), nil
+		return deleted(d.Status, d.Generation), nil
 	}
 
 	// Object still exists after delete - it has finalizers or is in graceful termination.
@@ -321,9 +323,9 @@ func (r *DeleteReconciler) executeDelete(
 	deletionTimestamp = obj.GetDeletionTimestamp()
 	if deletionTimestamp == nil {
 		// Object exists but has no deletion timestamp - unexpected state.
-		return deleteFailed(d.Status, fmt.Errorf("delete accepted but object has no deletion timestamp")), nil
+		return deleteFailed(d.Status, d.Generation, fmt.Errorf("delete accepted but object has no deletion timestamp")), nil
 	}
 	uid := obj.GetUID()
 	msg := fmt.Sprintf("deletion timestamp: %s, uid: %s", deletionTimestamp.Format(time.RFC3339), uid)
-	return waitingForDeletion(d.Status, msg), nil
+	return waitingForDeletion(d.Status, d.Generation, msg), nil
 }
