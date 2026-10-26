@@ -42,3 +42,7 @@ obvious from that listing:
     into ReadDesire status. See `internal/controllers/readdesire/AGENTS.md`.
   - `util` — shared helpers (`WithCondition`, `Equal`, `DescribeIdentity`) reused across the
     reconcile controllers.
+
+## References
+
+- Logging standard: [HyperFleet logging specification](https://github.com/openshift-hyperfleet/architecture/blob/main/hyperfleet/standards/logging-specification.md)
