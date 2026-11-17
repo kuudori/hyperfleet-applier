@@ -514,6 +514,60 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 				t.Fatalf("expected ErrNotFound after delete, got %v", err)
 			}
 		})
+
+		t.Run("DeleteStaleVersionRejected", func(t *testing.T) {
+			store := newStore(t)
+			id := identity("cluster-a", desire.TypeApply, "cm-stale")
+
+			created, err := store.CreateApplyDesire(ctx, newApplyDesire(id, ownerA, kubeContentV1))
+			if err != nil {
+				t.Fatalf("CreateApplyDesire: %v", err)
+			}
+			updated, err := store.UpdateApplyDesireSpec(
+				ctx, id, desire.ApplySpec{KubeContent: json.RawMessage(kubeContentV2)}, ownerA, created.Version,
+			)
+			if err != nil {
+				t.Fatalf("UpdateApplyDesireSpec: %v", err)
+			}
+			err = store.DeleteApplyDesire(ctx, id, ownerA, created.Version)
+			if !errors.Is(err, desire.ErrVersionConflict) {
+				t.Fatalf("expected ErrVersionConflict for stale version %d, got %v", created.Version, err)
+			}
+			got, err := store.GetApplyDesire(ctx, id)
+			if err != nil {
+				t.Fatalf("GetApplyDesire after stale-version delete: %v", err)
+			}
+			if got.Version != updated.Version {
+				t.Errorf("expected Version == %d to survive a stale-version delete, got %d", updated.Version, got.Version)
+			}
+			if string(got.Spec.KubeContent) != kubeContentV2 {
+				t.Errorf("stale-version delete changed KubeContent: got %q", got.Spec.KubeContent)
+			}
+		})
+
+		t.Run("DeleteForeignOwnerRejected", func(t *testing.T) {
+			store := newStore(t)
+			id := identity("cluster-a", desire.TypeApply, "cm-owner")
+
+			created, err := store.CreateApplyDesire(ctx, newApplyDesire(id, ownerA, kubeContentV1))
+			if err != nil {
+				t.Fatalf("CreateApplyDesire: %v", err)
+			}
+			err = store.DeleteApplyDesire(ctx, id, "owner-b", created.Version)
+			if !errors.Is(err, desire.ErrOwnerConflict) {
+				t.Fatalf("expected ErrOwnerConflict for foreign owner, got %v", err)
+			}
+			got, err := store.GetApplyDesire(ctx, id)
+			if err != nil {
+				t.Fatalf("GetApplyDesire after foreign-owner delete: %v", err)
+			}
+			if got.Owner != ownerA {
+				t.Errorf("expected Owner == %q to survive a foreign-owner delete, got %q", ownerA, got.Owner)
+			}
+			if got.Version != created.Version {
+				t.Errorf("expected Version == %d to survive a foreign-owner delete, got %d", created.Version, got.Version)
+			}
+		})
 	})
 
 	t.Run("DeleteDesire", func(t *testing.T) {
