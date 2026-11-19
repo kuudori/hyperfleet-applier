@@ -309,15 +309,27 @@ func TestIdentity_Validate_AllowsDotsInNameField(t *testing.T) {
 	}
 }
 
-func TestIdentity_Validate_AllowsColonsInName(t *testing.T) {
-	id := validIdentity()
-	id.Group = "rbac.authorization.k8s.io"
-	id.Resource = "clusterroles"
-	id.Namespace = ""
-	id.Name = "system:controller:attachdetach-controller"
+func TestIdentity_Validate_AllowsPathSegmentNames(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "colons", value: "system:controller:attachdetach-controller"},
+		{name: "uppercase", value: "Foo"},
+		{name: "underscore", value: "foo_bar"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := validIdentity()
+			id.Group = "rbac.authorization.k8s.io"
+			id.Resource = "clusterroles"
+			id.Namespace = ""
+			id.Name = tt.value
 
-	if err := id.Validate(); err != nil {
-		t.Errorf("expected validation to allow colons in name, got %v", err)
+			if err := id.Validate(); err != nil {
+				t.Errorf("expected validation to allow name %q, got %v", tt.value, err)
+			}
+		})
 	}
 }
 
