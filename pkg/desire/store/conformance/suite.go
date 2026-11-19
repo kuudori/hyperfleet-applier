@@ -1,5 +1,6 @@
-// Package conformance is a reusable suite for SpecStore and StatusStore
-// backends. RunStatusStoreSuite seeds fixtures through SpecStore.
+// Package conformance is a reusable suite for SpecStore, StatusStore and
+// SweeperStore backends. RunStatusStoreSuite and RunSweeperStoreSuite seed
+// fixtures through SpecStore.
 package conformance
 
 import (
@@ -11,12 +12,16 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 )
 
 const (
 	resourceConfigMaps   = "configmaps"
 	ownerA               = "owner-a"
+	ownerB               = "owner-b"
+	sweeperOwner         = "sweeper"
 	kubeContentV1        = `{"v":1}`
 	kubeContentV2        = `{"v":2}`
 	mutatedStatusMessage = "mutated"
@@ -124,6 +129,35 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			}
 		})
 
+		t.Run("ColonNameRoundTrips", func(t *testing.T) {
+			store := newStore(t)
+			id := desire.Identity{
+				ManagementCluster: "cluster-a",
+				Type:              desire.TypeApply,
+				Group:             "rbac.authorization.k8s.io",
+				Resource:          "clusterroles",
+				Name:              "system:controller:attachdetach-controller",
+			}
+
+			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(id, ownerA, `{}`)); err != nil {
+				t.Fatalf("CreateApplyDesire: %v", err)
+			}
+			got, err := store.GetApplyDesire(ctx, id)
+			if err != nil {
+				t.Fatalf("GetApplyDesire: %v", err)
+			}
+			if got.Identity != id {
+				t.Errorf("Get identity = %+v, want %+v", got.Identity, id)
+			}
+			listed, err := store.ListApplyDesires(ctx, id.ManagementCluster)
+			if err != nil {
+				t.Fatalf("ListApplyDesires: %v", err)
+			}
+			if len(listed) != 1 || listed[0].Identity != id {
+				t.Errorf("ListApplyDesires = %+v, want one desire with identity %+v", listed, id)
+			}
+		})
+
 		t.Run("CreateDuplicateDifferentOwnerReturnsOwnerConflict", func(t *testing.T) {
 			store := newStore(t)
 			id := identity("cluster-a", desire.TypeApply, "owner-first")
@@ -131,7 +165,7 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 				t.Fatalf("CreateApplyDesire: %v", err)
 			}
 
-			_, err := store.CreateApplyDesire(ctx, newApplyDesire(id, "owner-b", `{}`))
+			_, err := store.CreateApplyDesire(ctx, newApplyDesire(id, ownerB, `{}`))
 			if !errors.Is(err, desire.ErrOwnerConflict) {
 				t.Fatalf("expected ErrOwnerConflict for different owner duplicate, got %v", err)
 			}
@@ -485,7 +519,7 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			}
 
 			_, err = store.UpdateApplyDesireSpec(
-				ctx, id, desire.ApplySpec{KubeContent: json.RawMessage(kubeContentV2)}, "owner-b", created.Version,
+				ctx, id, desire.ApplySpec{KubeContent: json.RawMessage(kubeContentV2)}, ownerB, created.Version,
 			)
 			if !errors.Is(err, desire.ErrOwnerConflict) {
 				t.Fatalf("expected ErrOwnerConflict for a different owner, got %v", err)
@@ -553,7 +587,7 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			if err != nil {
 				t.Fatalf("CreateApplyDesire: %v", err)
 			}
-			err = store.DeleteApplyDesire(ctx, id, "owner-b", created.Version)
+			err = store.DeleteApplyDesire(ctx, id, ownerB, created.Version)
 			if !errors.Is(err, desire.ErrOwnerConflict) {
 				t.Fatalf("expected ErrOwnerConflict for foreign owner, got %v", err)
 			}
@@ -636,7 +670,7 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			if err != nil {
 				t.Fatalf("CreateDeleteDesire: %v", err)
 			}
-			if err := store.DeleteDeleteDesire(ctx, id, "owner-b", created.Version); !errors.Is(
+			if err := store.DeleteDeleteDesire(ctx, id, ownerB, created.Version); !errors.Is(
 				err, desire.ErrOwnerConflict,
 			) {
 				t.Fatalf("expected ErrOwnerConflict for foreign owner, got %v", err)
@@ -710,7 +744,7 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			if err != nil {
 				t.Fatalf("CreateReadDesire: %v", err)
 			}
-			if err := store.DeleteReadDesire(ctx, id, "owner-b", created.Version); !errors.Is(
+			if err := store.DeleteReadDesire(ctx, id, ownerB, created.Version); !errors.Is(
 				err, desire.ErrOwnerConflict,
 			) {
 				t.Fatalf("expected ErrOwnerConflict for foreign owner, got %v", err)
@@ -960,7 +994,7 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerA, `{}`)); err != nil {
 				t.Fatalf("CreateApplyDesire: %v", err)
 			}
-			if _, err := store.CreateReadDesire(ctx, newReadDesire(idRead, "owner-b")); !errors.Is(
+			if _, err := store.CreateReadDesire(ctx, newReadDesire(idRead, ownerB)); !errors.Is(
 				err, desire.ErrOwnerConflict,
 			) {
 				t.Fatalf("expected ErrOwnerConflict for foreign owner Read, got %v", err)
@@ -975,7 +1009,7 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerA, `{}`)); err != nil {
 				t.Fatalf("CreateApplyDesire: %v", err)
 			}
-			if _, err := store.CreateDeleteDesire(ctx, newDeleteDesire(idDelete, "owner-b")); !errors.Is(
+			if _, err := store.CreateDeleteDesire(ctx, newDeleteDesire(idDelete, ownerB)); !errors.Is(
 				err, desire.ErrOwnerConflict,
 			) {
 				t.Fatalf("expected ErrOwnerConflict for foreign owner Delete, got %v", err)
@@ -990,7 +1024,7 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			if _, err := store.CreateReadDesire(ctx, newReadDesire(idRead, ownerA)); err != nil {
 				t.Fatalf("CreateReadDesire: %v", err)
 			}
-			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, "owner-b", `{}`)); !errors.Is(
+			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerB, `{}`)); !errors.Is(
 				err, desire.ErrOwnerConflict,
 			) {
 				t.Fatalf("expected ErrOwnerConflict for foreign owner Apply under Read, got %v", err)
@@ -1005,7 +1039,7 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			if _, err := store.CreateDeleteDesire(ctx, newDeleteDesire(idDelete, ownerA)); err != nil {
 				t.Fatalf("CreateDeleteDesire: %v", err)
 			}
-			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, "owner-b", `{}`)); !errors.Is(
+			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerB, `{}`)); !errors.Is(
 				err, desire.ErrOwnerConflict,
 			) {
 				t.Fatalf("expected ErrOwnerConflict for foreign owner Apply under Delete, got %v", err)
@@ -1667,5 +1701,161 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				)
 			}
 		})
+	})
+}
+
+// SweeperFixture is the set of views over one backend that
+// RunSweeperStoreSuite needs. All three must share the same underlying state.
+type SweeperFixture struct {
+	Spec    desire.SpecStore
+	Status  desire.StatusStore
+	Sweeper desire.SweeperStore
+}
+
+// RunSweeperStoreSuite exercises SweeperStore. newFixture must return views
+// over one fresh store.
+func RunSweeperStoreSuite(t *testing.T, newFixture func(t *testing.T) SweeperFixture) {
+	ctx := context.Background()
+
+	t.Run("CreateDeleteDesire", func(t *testing.T) {
+		t.Run("SweeperSupersedesForeignApplyAndKeepsReadOwner", func(t *testing.T) {
+			f := newFixture(t)
+			idApply := identity("cluster-a", desire.TypeApply, "sweep-create")
+			idDelete := identity(idApply.ManagementCluster, desire.TypeDelete, idApply.Name)
+			idRead := identity(idApply.ManagementCluster, desire.TypeRead, idApply.Name)
+
+			_, err := f.Spec.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerA, `{}`))
+			require.NoError(t, err, "CreateApplyDesire")
+			read, err := f.Spec.CreateReadDesire(ctx, newReadDesire(idRead, ownerA))
+			require.NoError(t, err, "CreateReadDesire")
+
+			_, err = f.Spec.CreateDeleteDesire(ctx, newDeleteDesire(idDelete, ownerB))
+			require.ErrorIs(t, err, desire.ErrOwnerConflict, "CreateDeleteDesire as non-sweeper foreign owner")
+			_, err = f.Spec.GetApplyDesire(ctx, idApply)
+			require.NoError(t, err, "GetApplyDesire after rejected create")
+
+			created, err := f.Sweeper.CreateDeleteDesire(ctx, newDeleteDesire(idDelete, sweeperOwner))
+			require.NoError(t, err, "sweeper CreateDeleteDesire")
+			if created.Owner != sweeperOwner {
+				t.Errorf("expected DeleteDesire Owner %q, got %q", sweeperOwner, created.Owner)
+			}
+			if created.Version != 1 || created.Generation != 1 {
+				t.Errorf("expected Version 1 and Generation 1, got %d and %d", created.Version, created.Generation)
+			}
+			_, err = f.Spec.GetApplyDesire(ctx, idApply)
+			require.ErrorIs(t, err, desire.ErrNotFound, "GetApplyDesire after supersede")
+
+			gotDelete, err := f.Spec.GetDeleteDesire(ctx, idDelete)
+			require.NoError(t, err, "GetDeleteDesire")
+			if gotDelete.Owner != sweeperOwner {
+				t.Errorf("expected stored DeleteDesire Owner %q, got %q", sweeperOwner, gotDelete.Owner)
+			}
+			gotRead, err := f.Spec.GetReadDesire(ctx, idRead)
+			require.NoError(t, err, "GetReadDesire")
+			if gotRead.Owner != ownerA {
+				t.Errorf("expected ReadDesire to keep Owner %q, got %q", ownerA, gotRead.Owner)
+			}
+			if gotRead.Version != read.Version {
+				t.Errorf("expected ReadDesire Version %d unchanged, got %d", read.Version, gotRead.Version)
+			}
+
+			_, err = f.Spec.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerB, `{}`))
+			require.ErrorIs(t, err, desire.ErrOwnerConflict, "CreateApplyDesire by another owner after sweeper create")
+
+			// Confirm the delete so the next create reaches the owner check instead of
+			// stopping at ErrDeletePending.
+			_, err = f.Status.UpdateDeleteDesireStatus(
+				ctx, idDelete,
+				desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonDeleted, metav1.ConditionTrue)}},
+				gotDelete.Version,
+			)
+			require.NoError(t, err, "UpdateDeleteDesireStatus")
+			_, err = f.Spec.CreateApplyDesire(ctx, newApplyDesire(idApply, sweeperOwner, `{}`))
+			require.ErrorIs(t, err, desire.ErrOwnerConflict, "CreateApplyDesire by sweeper owner with foreign ReadDesire")
+		})
+
+		t.Run("ExistingDeleteDesireReturnsAlreadyExists", func(t *testing.T) {
+			f := newFixture(t)
+			id := identity("cluster-a", desire.TypeDelete, "sweep-exists")
+
+			_, err := f.Spec.CreateDeleteDesire(ctx, newDeleteDesire(id, ownerA))
+			require.NoError(t, err, "CreateDeleteDesire")
+			_, err = f.Sweeper.CreateDeleteDesire(ctx, newDeleteDesire(id, sweeperOwner))
+			require.ErrorIs(t, err, desire.ErrAlreadyExists, "sweeper CreateDeleteDesire on existing record")
+
+			got, err := f.Spec.GetDeleteDesire(ctx, id)
+			require.NoError(t, err, "GetDeleteDesire")
+			if got.Owner != ownerA {
+				t.Errorf("expected stored Owner %q unchanged, got %q", ownerA, got.Owner)
+			}
+		})
+	})
+
+	t.Run("DeleteDeleteDesire", func(t *testing.T) {
+		t.Run("SweeperDeletesForeignConfirmedRecord", func(t *testing.T) {
+			f := newFixture(t)
+			id := identity("cluster-a", desire.TypeDelete, "sweep-del")
+
+			created, err := f.Spec.CreateDeleteDesire(ctx, newDeleteDesire(id, ownerA))
+			require.NoError(t, err, "CreateDeleteDesire")
+			confirmed, err := f.Status.UpdateDeleteDesireStatus(
+				ctx, id,
+				desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonDeleted, metav1.ConditionTrue)}},
+				created.Version,
+			)
+			require.NoError(t, err, "UpdateDeleteDesireStatus")
+			if confirmed.Version == created.Version {
+				t.Fatalf("expected the status write to advance Version from %d", created.Version)
+			}
+
+			err = f.Spec.DeleteDeleteDesire(ctx, id, ownerB, confirmed.Version)
+			require.ErrorIs(t, err, desire.ErrOwnerConflict, "DeleteDeleteDesire as non-sweeper foreign owner")
+			err = f.Sweeper.DeleteDeleteDesire(ctx, id, created.Version)
+			require.ErrorIs(t, err, desire.ErrVersionConflict, "sweeper DeleteDeleteDesire with stale version")
+			err = f.Sweeper.DeleteDeleteDesire(ctx, id, confirmed.Version)
+			require.NoError(t, err, "sweeper DeleteDeleteDesire")
+			_, err = f.Spec.GetDeleteDesire(ctx, id)
+			require.ErrorIs(t, err, desire.ErrNotFound, "GetDeleteDesire after sweeper delete")
+		})
+	})
+
+	t.Run("ReadDesire", func(t *testing.T) {
+		t.Run("SweeperDeletesForeignRecord", func(t *testing.T) {
+			f := newFixture(t)
+			id := identity("cluster-a", desire.TypeRead, "sweep-read")
+
+			created, err := f.Spec.CreateReadDesire(ctx, newReadDesire(id, ownerA))
+			require.NoError(t, err, "CreateReadDesire")
+
+			err = f.Spec.DeleteReadDesire(ctx, id, ownerB, created.Version)
+			require.ErrorIs(t, err, desire.ErrOwnerConflict, "DeleteReadDesire as non-sweeper foreign owner")
+			err = f.Sweeper.DeleteReadDesire(ctx, id, created.Version+1)
+			require.ErrorIs(t, err, desire.ErrVersionConflict, "sweeper DeleteReadDesire with stale version")
+			err = f.Sweeper.DeleteReadDesire(ctx, id, created.Version)
+			require.NoError(t, err, "sweeper DeleteReadDesire")
+			_, err = f.Spec.GetReadDesire(ctx, id)
+			require.ErrorIs(t, err, desire.ErrNotFound, "GetReadDesire after sweeper delete")
+		})
+	})
+
+	t.Run("MissingReturnsNotFound", func(t *testing.T) {
+		deleteDelete := identity("cluster-a", desire.TypeDelete, "sweep-del-missing")
+		deleteRead := identity("cluster-a", desire.TypeRead, "sweep-read-missing")
+		cases := []struct {
+			call func(desire.SweeperStore) error
+			name string
+		}{
+			{name: "sweeper DeleteDeleteDesire", call: func(s desire.SweeperStore) error {
+				return s.DeleteDeleteDesire(ctx, deleteDelete, 1)
+			}},
+			{name: "sweeper DeleteReadDesire", call: func(s desire.SweeperStore) error {
+				return s.DeleteReadDesire(ctx, deleteRead, 1)
+			}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				require.ErrorIs(t, tc.call(newFixture(t).Sweeper), desire.ErrNotFound, tc.name)
+			})
+		}
 	})
 }

@@ -15,6 +15,13 @@ func TestMemoryStore_SpecStoreConformance(t *testing.T) {
 	})
 }
 
+func TestMemoryStore_SweeperStoreConformance(t *testing.T) {
+	conformance.RunSweeperStoreSuite(t, func(t *testing.T) conformance.SweeperFixture {
+		s := New()
+		return conformance.SweeperFixture{Spec: s, Status: s, Sweeper: s.Sweeper()}
+	})
+}
+
 func TestMemoryStore_StatusStoreConformance(t *testing.T) {
 	conformance.RunStatusStoreSuite(t, func(t *testing.T) desire.StatusStore {
 		return New()

@@ -58,6 +58,13 @@ func TestRedisStore_SpecStoreConformance(t *testing.T) {
 	})
 }
 
+func TestRedisStore_SweeperStoreConformance(t *testing.T) {
+	conformance.RunSweeperStoreSuite(t, func(t *testing.T) conformance.SweeperFixture {
+		s := newMiniStore(t)
+		return conformance.SweeperFixture{Spec: s, Status: s, Sweeper: s.Sweeper()}
+	})
+}
+
 func TestRedisStore_StatusStoreConformance(t *testing.T) {
 	conformance.RunStatusStoreSuite(t, func(t *testing.T) desire.StatusStore {
 		return newMiniStore(t)

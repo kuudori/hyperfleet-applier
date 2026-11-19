@@ -89,24 +89,27 @@ func TestIdentity_Validate_RejectsUppercase(t *testing.T) {
 
 func TestIdentity_Validate_RejectsColonAndSlash(t *testing.T) {
 	tests := []struct {
-		field func(*desire.Identity, string)
-		name  string
+		field       func(*desire.Identity, string)
+		name        string
+		allowsColon bool
 	}{
 		{name: "ManagementCluster", field: func(id *desire.Identity, v string) { id.ManagementCluster = v }},
 		{name: "Resource", field: func(id *desire.Identity, v string) { id.Resource = v }},
 		{name: "Namespace", field: func(id *desire.Identity, v string) { id.Namespace = v }},
-		{name: "Name", field: func(id *desire.Identity, v string) { id.Name = v }},
+		{name: "Name", field: func(id *desire.Identity, v string) { id.Name = v }, allowsColon: true},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name+":Colon", func(t *testing.T) {
-			id := validIdentity()
-			tt.field(&id, "value:invalid")
+		if !tt.allowsColon {
+			t.Run(tt.name+":Colon", func(t *testing.T) {
+				id := validIdentity()
+				tt.field(&id, "value:invalid")
 
-			if err := id.Validate(); err == nil {
-				t.Errorf("expected validation to reject colon character")
-			}
-		})
+				if err := id.Validate(); err == nil {
+					t.Errorf("expected validation to reject colon character")
+				}
+			})
+		}
 
 		t.Run(tt.name+":Slash", func(t *testing.T) {
 			id := validIdentity()
@@ -302,7 +305,52 @@ func TestIdentity_Validate_AllowsDotsInNameField(t *testing.T) {
 	id.Name = "kube-root-ca.crt"
 
 	if err := id.Validate(); err != nil {
-		t.Errorf("expected validation to allow DNS-1123 subdomain object name, got %v", err)
+		t.Errorf("expected validation to allow dots in name, got %v", err)
+	}
+}
+
+func TestIdentity_Validate_AllowsColonsInName(t *testing.T) {
+	id := validIdentity()
+	id.Group = "rbac.authorization.k8s.io"
+	id.Resource = "clusterroles"
+	id.Namespace = ""
+	id.Name = "system:controller:attachdetach-controller"
+
+	if err := id.Validate(); err != nil {
+		t.Errorf("expected validation to allow colons in name, got %v", err)
+	}
+}
+
+func TestIdentity_Validate_RejectsInvalidName(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "dot", value: "."},
+		{name: "dotDot", value: ".."},
+		{name: "percent", value: "a%b"},
+		{name: "slash", value: "a/b"},
+		{name: "tooLong", value: strings.Repeat("a", 254)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := validIdentity()
+			id.Name = tt.value
+
+			if err := id.Validate(); err == nil {
+				t.Errorf("expected validation to reject name %q", tt.value)
+			}
+		})
+	}
+}
+
+func TestIdentity_Validate_AllowsMaxLengthName(t *testing.T) {
+	id := validIdentity()
+	id.Name = strings.Repeat("a", 253)
+
+	if err := id.Validate(); err != nil {
+		t.Errorf("expected validation to allow a 253-character name, got %v", err)
 	}
 }
 

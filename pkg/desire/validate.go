@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/validate/content"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -16,7 +17,7 @@ import (
 //	group (DNS-1123 subdomain, ≤253, optional)
 //	resource (DNS-1035 label, ≤63, required)
 //	namespace (DNS-1123 label, ≤63, optional, no dots)
-//	name (DNS-1123 subdomain, ≤253, optional)
+//	name (Kubernetes path segment name, ≤253, optional; may contain colons)
 func (id Identity) Validate() error {
 	if id.Type != TypeApply && id.Type != TypeDelete && id.Type != TypeRead {
 		return fmt.Errorf("field type: value %q is not a valid DesireType (apply, delete, or read)", id.Type)
@@ -33,8 +34,28 @@ func (id Identity) Validate() error {
 	if err := validateDNS1123Label("namespace", id.Namespace, false); err != nil {
 		return fmt.Errorf("identity: %w", err)
 	}
-	if err := validateDNS1123Subdomain("name", id.Name, false); err != nil {
+	if err := validateObjectName("name", id.Name); err != nil {
 		return fmt.Errorf("identity: %w", err)
+	}
+	return nil
+}
+
+// maxObjectNameLength is the longest accepted name. It equals the DNS-1123
+// subdomain limit that the name rule had before.
+const maxObjectNameLength = validation.DNS1123SubdomainMaxLength
+
+// validateObjectName accepts a Kubernetes path segment name, such as
+// system:controller:attachdetach-controller. It allows colons. An empty value
+// is valid.
+func validateObjectName(field string, value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > maxObjectNameLength {
+		return fmt.Errorf("field %s: value %q is longer than %d characters", field, value, maxObjectNameLength)
+	}
+	if errs := content.IsPathSegmentName(value); len(errs) > 0 {
+		return fmt.Errorf("field %s: value %q is not a valid path segment name: %s", field, value, strings.Join(errs, "; "))
 	}
 	return nil
 }
