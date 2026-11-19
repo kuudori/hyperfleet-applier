@@ -69,8 +69,9 @@ func (sel PrefixSelector) Matches(id Identity) bool {
 // Apply, Delete, and Read are separate records keyed by full Identity.
 type SpecStore interface {
 	// CreateApplyDesire creates an ApplyDesire.
-	// Returns ErrOwnerConflict for a different target owner, ErrDeletePending for
-	// an active DeleteDesire, or ErrAlreadyExists if the ApplyDesire exists.
+	// Returns ErrOwnerConflict if any existing sibling has a different owner,
+	// ErrDeletePending for an active DeleteDesire, or ErrAlreadyExists if the
+	// ApplyDesire exists.
 	// A confirmed delete is atomically replaced by the new apply.
 	CreateApplyDesire(ctx context.Context, d ApplyDesire) (ApplyDesire, error)
 
@@ -96,8 +97,8 @@ type SpecStore interface {
 
 	// CreateDeleteDesire creates a DeleteDesire and removes any sibling
 	// ApplyDesire for the same target.
-	// Returns ErrOwnerConflict for a different target owner or ErrAlreadyExists
-	// if the DeleteDesire exists.
+	// Returns ErrOwnerConflict if any existing sibling has a different owner, or
+	// ErrAlreadyExists if the DeleteDesire exists.
 	CreateDeleteDesire(ctx context.Context, d DeleteDesire) (DeleteDesire, error)
 
 	// GetDeleteDesire retrieves a previously created DeleteDesire.
@@ -109,8 +110,8 @@ type SpecStore interface {
 	DeleteDeleteDesire(ctx context.Context, id Identity, owner string, version int64) error
 
 	// CreateReadDesire creates a ReadDesire.
-	// Returns ErrOwnerConflict for a different target owner or ErrAlreadyExists if
-	// the ReadDesire exists.
+	// Returns ErrOwnerConflict if any existing sibling has a different owner, or
+	// ErrAlreadyExists if the ReadDesire exists.
 	CreateReadDesire(ctx context.Context, d ReadDesire) (ReadDesire, error)
 
 	// GetReadDesire retrieves a previously created ReadDesire.
@@ -163,4 +164,20 @@ type StatusStore interface {
 	// UpdateReadDesireStatus updates ReadDesire status, optionally including
 	// KubeContent. It does not check ownership or advance Version.
 	UpdateReadDesireStatus(ctx context.Context, id Identity, status ReadStatus) (ReadDesire, error)
+}
+
+// SweeperStore lets the sweeper act on desires that another caller owns. Each
+// method is the SpecStore method of the same name without the owner check. The
+// store does not authorize callers. A backend returns it separately from its
+// SpecStore, so a SpecStore holder cannot reach it by type assertion.
+type SweeperStore interface {
+	// CreateDeleteDesire also removes a sibling ApplyDesire, whatever
+	// its owner. A sibling ReadDesire keeps its Owner.
+	CreateDeleteDesire(ctx context.Context, d DeleteDesire) (DeleteDesire, error)
+
+	// DeleteDeleteDesire requires an exact Version match.
+	DeleteDeleteDesire(ctx context.Context, id Identity, version int64) error
+
+	// DeleteReadDesire requires an exact Version match.
+	DeleteReadDesire(ctx context.Context, id Identity, version int64) error
 }

@@ -57,6 +57,12 @@ Create-time invariants across sibling records:
 - apply/delete mutual exclusion (`DeleteDesire` supersedes `ApplyDesire`; active delete blocks apply)
 - `ReadDesire` coexists with either
 
+A DeleteDesire that the sweeper creates through `SweeperStore` is the one exception to one owner
+per target. It replaces the ApplyDesire. The ReadDesire keeps its own owner until the sweeper
+deletes it. A create succeeds only when every existing sibling has the caller's owner, so while
+both records exist every `SpecStore` create returns `ErrOwnerConflict`, from the sweeper or the
+adapter alike.
+
 `Identity` implements `slog.LogValuer` so controllers can log `"identity", id` instead of unwrapping
 fields by hand (shared across apply/delete/read).
 
@@ -78,9 +84,19 @@ Store contracts split spec and status:
   `UpdateApplyDesireStatus` and `UpdateDeleteDesireStatus` require exact `Version` match;
   `UpdateReadDesireStatus` does not advance `Version`.
 
-The spec/status split is a Go capability boundary, not a storage-enforced permission boundary.
+- **SweeperStore** — `CreateDeleteDesire`, `DeleteDeleteDesire` and
+  `DeleteReadDesire`. Each works like the `SpecStore` method of the same name, without the
+  owner check. Deletes still require an exact `Version` match. The store does not authorize callers:
+  authorize the sweeper before you call these methods. The `SpecStore` methods keep the owner check
+  for every caller.
 
-`Validate()` methods on `Identity`/`ApplySpec`/each desire type enforce DNS-1123/1035 sizing rules
-on identity fields (`validate.go`) — backends call these at Create time.
+The spec/status split and `SweeperStore` are Go capability boundaries. They are not
+storage-enforced permission boundaries. A backend's `Sweeper()` method returns `SweeperStore` as a
+separate value, so a `SpecStore` holder cannot reach it with a type assertion. A holder of the
+concrete `*Store` can still call `Sweeper()`.
+
+`Validate()` methods on `Identity`/`ApplySpec`/each desire type enforce identity field rules
+(`validate.go`) — backends call these at Create time. `name` follows Kubernetes path segment name
+rules (colons allowed, ≤253); the other identity fields keep DNS-1123/1035 rules.
 
 `observe.go` holds process-local owner-conflict metrics/logging.

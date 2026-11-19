@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
+	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/internal/ownercheck"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/internal/speccompare"
 )
 
@@ -271,13 +272,16 @@ func (s *Store) casCreate(
 	return out, nil
 }
 
-// checkTargetOwner enforces the shared owner for a target.
+// checkTargetOwner enforces the shared owner for a target: every existing
+// sibling record must pass check.
 func checkTargetOwner(
-	ctx context.Context, id desire.Identity, attempted string, sibs targetSiblings,
+	ctx context.Context, id desire.Identity, check ownercheck.Func, sibs targetSiblings,
 ) error {
 	for _, t := range desire.AllTypes() {
 		if r := sibs[t]; r != nil {
-			return desire.CheckOwner(ctx, id, r.Owner, attempted)
+			if err := check(ctx, id, r.Owner); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -290,7 +294,7 @@ func (s *Store) CreateApplyDesire(ctx context.Context, d desire.ApplyDesire) (de
 	}
 
 	rec, err := s.casCreate(ctx, d.Identity, func(sibs targetSiblings) (*resourceRecord, []string, error) {
-		if err := checkTargetOwner(ctx, d.Identity, d.Owner, sibs); err != nil {
+		if err := checkTargetOwner(ctx, d.Identity, ownercheck.OwnedBy(d.Owner), sibs); err != nil {
 			return nil, nil, fmt.Errorf("desire: create apply desire %s: %w", d.Identity, err)
 		}
 		spec := desire.CloneApplySpec(d.Spec)
@@ -390,12 +394,18 @@ func (s *Store) DeleteApplyDesire(ctx context.Context, id desire.Identity, owner
 
 // CreateDeleteDesire creates a new DeleteDesire.
 func (s *Store) CreateDeleteDesire(ctx context.Context, d desire.DeleteDesire) (desire.DeleteDesire, error) {
+	return s.createDeleteDesire(ctx, d, ownercheck.OwnedBy(d.Owner))
+}
+
+func (s *Store) createDeleteDesire(
+	ctx context.Context, d desire.DeleteDesire, check ownercheck.Func,
+) (desire.DeleteDesire, error) {
 	if err := d.Validate(); err != nil {
 		return desire.DeleteDesire{}, fmt.Errorf("desire: validate delete desire: %w", err)
 	}
 
 	rec, err := s.casCreate(ctx, d.Identity, func(sibs targetSiblings) (*resourceRecord, []string, error) {
-		if err := checkTargetOwner(ctx, d.Identity, d.Owner, sibs); err != nil {
+		if err := checkTargetOwner(ctx, d.Identity, check, sibs); err != nil {
 			return nil, nil, fmt.Errorf("desire: create delete desire %s: %w", d.Identity, err)
 		}
 		if sibs[desire.TypeDelete] != nil {
@@ -434,6 +444,12 @@ func (s *Store) GetDeleteDesire(ctx context.Context, id desire.Identity) (desire
 
 // DeleteDeleteDesire deletes a DeleteDesire.
 func (s *Store) DeleteDeleteDesire(ctx context.Context, id desire.Identity, owner string, version int64) error {
+	return s.deleteDeleteDesire(ctx, id, version, ownercheck.OwnedBy(owner))
+}
+
+func (s *Store) deleteDeleteDesire(
+	ctx context.Context, id desire.Identity, version int64, check ownercheck.Func,
+) error {
 	if id.Type != desire.TypeDelete {
 		return desire.ErrNotFound
 	}
@@ -444,7 +460,7 @@ func (s *Store) DeleteDeleteDesire(ctx context.Context, id desire.Identity, owne
 		if rec.Version != version {
 			return desire.ErrVersionConflict
 		}
-		if err := desire.CheckOwner(ctx, id, rec.Owner, owner); err != nil {
+		if err := check(ctx, id, rec.Owner); err != nil {
 			return fmt.Errorf("desire: delete delete desire %s: %w", id, err)
 		}
 		return nil
@@ -458,7 +474,7 @@ func (s *Store) CreateReadDesire(ctx context.Context, d desire.ReadDesire) (desi
 	}
 
 	rec, err := s.casCreate(ctx, d.Identity, func(sibs targetSiblings) (*resourceRecord, []string, error) {
-		if err := checkTargetOwner(ctx, d.Identity, d.Owner, sibs); err != nil {
+		if err := checkTargetOwner(ctx, d.Identity, ownercheck.OwnedBy(d.Owner), sibs); err != nil {
 			return nil, nil, fmt.Errorf("desire: create read desire %s: %w", d.Identity, err)
 		}
 		if sibs[desire.TypeRead] != nil {
@@ -493,6 +509,12 @@ func (s *Store) GetReadDesire(ctx context.Context, id desire.Identity) (desire.R
 
 // DeleteReadDesire deletes a ReadDesire.
 func (s *Store) DeleteReadDesire(ctx context.Context, id desire.Identity, owner string, version int64) error {
+	return s.deleteReadDesire(ctx, id, version, ownercheck.OwnedBy(owner))
+}
+
+func (s *Store) deleteReadDesire(
+	ctx context.Context, id desire.Identity, version int64, check ownercheck.Func,
+) error {
 	if id.Type != desire.TypeRead {
 		return desire.ErrNotFound
 	}
@@ -503,7 +525,7 @@ func (s *Store) DeleteReadDesire(ctx context.Context, id desire.Identity, owner 
 		if rec.Version != version {
 			return desire.ErrVersionConflict
 		}
-		if err := desire.CheckOwner(ctx, id, rec.Owner, owner); err != nil {
+		if err := check(ctx, id, rec.Owner); err != nil {
 			return fmt.Errorf("desire: delete read desire %s: %w", id, err)
 		}
 		return nil
@@ -766,4 +788,28 @@ func (s *Store) projectReadDesire(rec *resourceRecord) desire.ReadDesire {
 		Version:       rec.Version,
 		Status:        desire.CloneReadStatus(rec.ReadStatus),
 	}
+}
+
+// Sweeper returns a SweeperStore that shares this store's state. *Store does
+// not implement SweeperStore, so a SpecStore holder cannot reach it by type
+// assertion.
+func (s *Store) Sweeper() desire.SweeperStore {
+	return sweeper{s}
+}
+
+type sweeper struct{ s *Store }
+
+// CreateDeleteDesire is Store.CreateDeleteDesire with ownercheck.AnyOwner.
+func (w sweeper) CreateDeleteDesire(ctx context.Context, d desire.DeleteDesire) (desire.DeleteDesire, error) {
+	return w.s.createDeleteDesire(ctx, d, ownercheck.AnyOwner)
+}
+
+// DeleteDeleteDesire is Store.DeleteDeleteDesire with ownercheck.AnyOwner.
+func (w sweeper) DeleteDeleteDesire(ctx context.Context, id desire.Identity, version int64) error {
+	return w.s.deleteDeleteDesire(ctx, id, version, ownercheck.AnyOwner)
+}
+
+// DeleteReadDesire is Store.DeleteReadDesire with ownercheck.AnyOwner.
+func (w sweeper) DeleteReadDesire(ctx context.Context, id desire.Identity, version int64) error {
+	return w.s.deleteReadDesire(ctx, id, version, ownercheck.AnyOwner)
 }
